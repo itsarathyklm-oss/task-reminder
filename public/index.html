@@ -4,7 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Task Reminder</title>
-    <link rel="icon" type="image/png" href="/logo.png">
+    <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
     
     <!-- PWA Meta Tags -->
     <link rel="manifest" href="/manifest.json">
@@ -12,7 +13,7 @@
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
     <meta name="apple-mobile-web-app-title" content="Task Reminder">
-    <link rel="apple-touch-icon" href="/logo.png">
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png">
     <meta name="description" content="Track daily tasks, subscription renewals, and reminders — all in one place.">
     
     <style>
@@ -451,8 +452,8 @@
                         <h3 class="text-xs font-bold text-slate-800 uppercase tracking-wider">Reports & Export</h3>
                     </div>
                     <div class="p-5 space-y-3">
-                        <a href="/api/export/renewals" class="block bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-5 py-3 rounded-xl text-xs transition-all text-center">📥 Export Renewals (CSV)</a>
-                        <a href="/api/export/payments" class="block bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-5 py-3 rounded-xl text-xs transition-all text-center">📥 Export Payment History (CSV)</a>
+                        <button onclick="downloadCSV('/api/export/renewals', 'software_renewals.csv')" class="block w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-5 py-3 rounded-xl text-xs transition-all text-center cursor-pointer">📥 Export Renewals (CSV)</button>
+                        <button onclick="downloadCSV('/api/export/payments', 'payment_history.csv')" class="block w-full bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold px-5 py-3 rounded-xl text-xs transition-all text-center cursor-pointer">📥 Export Payment History (CSV)</button>
                     </div>
                 </div>
 
@@ -469,7 +470,7 @@
             </div>
             <div class="max-h-64 overflow-y-auto">
                 <table class="w-full text-xs">
-                    <thead><tr class="text-left text-slate-400 font-bold"><th class="p-2">Date</th><th class="p-2">Amount</th><th class="p-2">Period</th></tr></thead>
+                    <thead><tr class="text-left text-slate-400 font-bold"><th class="p-2">Date</th><th class="p-2">Amount</th><th class="p-2">Period</th><th class="p-2">Document</th></tr></thead>
                     <tbody id="paymentHistoryList"></tbody>
                 </table>
             </div>

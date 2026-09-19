@@ -24,5 +24,10 @@ CREATE TABLE IF NOT EXISTS reminders (
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
 
+-- payment_history: file columns for tracking uploaded documents per payment
+ALTER TABLE payment_history ADD COLUMN file_name VARCHAR(255) DEFAULT NULL;
+ALTER TABLE payment_history ADD COLUMN file_path VARCHAR(255) DEFAULT NULL;
+ALTER TABLE payment_history ADD COLUMN doc_type VARCHAR(50) DEFAULT NULL;
+
 -- daily_tasks: change due_date from DATE to DATETIME so time is preserved
 ALTER TABLE daily_tasks MODIFY COLUMN due_date DATETIME NOT NULL;

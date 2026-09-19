@@ -75,6 +75,14 @@ async function apiFetch(url, options = {}) {
     return res;
 }
 
+// Authenticated file URL helper — adds token for local uploads (Cloudinary URLs unchanged)
+function authFileUrl(filePath) {
+    if (!filePath) return null;
+    if (filePath.startsWith('http')) return filePath;
+    const token = localStorage.getItem('token') || '';
+    return '/uploads/' + filePath + '?token=' + encodeURIComponent(token);
+}
+
 // Safe date parser: handles '2026-09-16 12:00:00' (MySQL) as LOCAL time
 // Also handles ISO strings with timezone info (e.g. '2026-09-16T11:30:00.000Z')
 function parseDate(str) {
@@ -1218,10 +1226,6 @@ function clearNotifications() {
     renderNotifDropdown();
 }
 
-function showToastNotification(title, message) {
-    showToast(title, message, 'info');
-}
-
 function checkTaskNotifications() {
     if (!allTasks || !Array.isArray(allTasks)) return;
 
@@ -1685,6 +1689,7 @@ function renderProjects() {
                                 <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Active</span>
                             </div>
                             <p class="text-xs text-gray-500 mt-0.5">Cycle: ${proj.renewal_cycle} &middot; Launched: ${launchDate} &middot; Renews: ${date}</p>
+                                ${(() => { const fUrl = authFileUrl(proj.file_path); if (!fUrl) return ""; const docLabel = proj.doc_type ? proj.doc_type.toUpperCase() : "DOC"; return "<a href=\"" + fUrl + "\" target=\"_blank\" class=\"text-[10px] text-blue-600 underline block mt-1\">📄 View " + docLabel + " (" + proj.file_name + ")</a>"; })()}
                         </div>
                         <div class="flex items-center gap-1.5 shrink-0 ml-2">
                             <button onclick="toggleSubscriptionStatus(${proj.id}, 'inactive')" title="Deactivate" class="text-[10px] bg-amber-500 text-white font-semibold px-2 py-1.5 rounded-lg hover:bg-amber-600 shadow-sm">⏸ Pause</button>
@@ -1708,6 +1713,7 @@ function renderProjects() {
                                 <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">Paused</span>
                             </div>
                             <p class="text-xs text-gray-400 mt-0.5">Cycle: ${proj.renewal_cycle} &middot; Launched: ${launchDate} &middot; Renews: ${date}</p>
+                                ${(() => { const fUrl = authFileUrl(proj.file_path); if (!fUrl) return ""; const docLabel = proj.doc_type ? proj.doc_type.toUpperCase() : "DOC"; return "<a href=\"" + fUrl + "\" target=\"_blank\" class=\"text-[10px] text-blue-600 underline block mt-1\">📄 View " + docLabel + " (" + proj.file_name + ")</a>"; })()}
                         </div>
                         <div class="flex items-center gap-1.5 shrink-0 ml-2">
                             <button onclick="toggleSubscriptionStatus(${proj.id}, 'active')" title="Activate" class="text-[10px] bg-green-500 text-white font-semibold px-2 py-1.5 rounded-lg hover:bg-green-600 shadow-sm">▶ Resume</button>
@@ -1747,8 +1753,9 @@ function renderProjects() {
             : days === 1 ? 'Tomorrow' 
             : `${days} days left`;
         
+        const fileUrl = proj.file_path && proj.file_path.startsWith("http") ? proj.file_path : "/uploads/" + proj.file_path;
         const documentLink = proj.file_path 
-            ? `<a href="/uploads/${proj.file_path}" target="_blank" class="text-xs text-blue-600 underline block mt-1">
+            ? `<a href="${fileUrl}" target="_blank" class="text-xs text-blue-600 underline block mt-1">
                 📄 View ${proj.doc_type ? proj.doc_type.toUpperCase() : 'DOC'} (${proj.file_name})
                </a>` 
             : '';
@@ -1784,15 +1791,22 @@ async function viewPaymentHistory(projectId, softwareName) {
     list.innerHTML = '';
 
     if (!history || history.length === 0) {
-        list.innerHTML = '<tr><td colspan="3" class="p-3 text-center text-gray-400">No payment logs found.</td></tr>';
+        list.innerHTML = '<tr><td colspan="4" class="p-3 text-center text-gray-400">No payment logs found.</td></tr>';
     } else {
         history.forEach(item => {
             const payDate = new Date(item.payment_date).toLocaleDateString();
+            let docCell = '<td class="p-2 text-gray-400">—</td>';
+            if (item.file_path) {
+                const docLabel = item.doc_type ? item.doc_type.toUpperCase() : 'DOC';
+                const fileUrl = authFileUrl(item.file_path);
+                docCell = `<td class="p-2"><a href="${fileUrl}" target="_blank" class="text-blue-600 hover:underline text-[10px] font-semibold">📄 View ${docLabel}</a></td>`;
+            }
             list.innerHTML += `
                 <tr class="border-b">
                     <td class="p-2">${payDate}</td>
                     <td class="p-2 font-bold text-green-600">$${parseFloat(item.amount_paid).toFixed(2)}</td>
                     <td class="p-2 text-xs text-gray-500">${item.period_covered || 'N/A'}</td>
+                    ${docCell}
                 </tr>
             `;
         });
@@ -1867,13 +1881,34 @@ function closeRenewModal() {
     document.getElementById('renewModal').classList.add('hidden');
 }
 
-// fetchNotifications replaced by fetchLiveNotifications in the notification system above
+
+function downloadCSV(url, filename) {
+    const token = localStorage.getItem('token');
+    if (!token) {
+        alert('Please log in to export reports.');
+        return;
+    }
+    fetch(url, { headers: { 'Authorization': 'Bearer ' + token } })
+        .then(res => {
+            if (!res.ok) throw new Error('Export failed. Please log in again.');
+            return res.blob();
+        })
+        .then(blob => {
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(a.href);
+        })
+        .catch(err => alert(err.message));
+}
 
 function filterView(sectionId) {
     // Grab every section by ID
     const el = {
         metrics:      document.getElementById('metricsGrid'),
-        notifications: document.getElementById('notificationContainer'),
         dashTasks:    document.getElementById('dashboardTasksSection'),
         subscriptions: document.getElementById('subscriptionsSection'),
         taskForm:     document.getElementById('tasks-section'),

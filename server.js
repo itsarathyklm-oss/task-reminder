@@ -6,6 +6,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const webPush = require('web-push');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const db = require('./db');
@@ -68,16 +70,69 @@ async function ensurePushSubscriptionsTable() {
 }
 
 const app = express();
-const JWT_SECRET = process.env.JWT_SECRET || 'your_super_secret_key_123';
 
-// 1. CRITICAL MIDDLEWARE (Must be declared before any route handlers)
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// SECURITY: Require JWT_SECRET — crash early if missing
+if (!process.env.JWT_SECRET) {
+    console.error('FATAL: JWT_SECRET environment variable is required. Set it in your .env file.');
+    process.exit(1);
+}
+const JWT_SECRET = process.env.JWT_SECRET;
+
+// 1. SECURITY MIDDLEWARE (Must be declared before any route handlers)
+app.use(helmet({
+    contentSecurityPolicy: false, // Disabled to allow inline scripts in current frontend
+    crossOriginEmbedderPolicy: false
+}));
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(cors({
-    origin: process.env.ALLOWED_ORIGIN || '*',
+    origin: process.env.ALLOWED_ORIGIN || 'https://task-reminder-xrvn.onrender.com',
     credentials: true
 }));
 app.use(express.static('public'));
+// Authenticated file serving — replaces public static for uploads
+// Accepts token via Authorization header OR ?token= query param (for browser <a> links)
+app.get('/uploads/:filename', (req, res, next) => {
+    // Try Authorization header first, then query param
+    let token = null;
+    const authHeader = req.headers['authorization'];
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        token = authHeader.split(' ')[1];
+    } else if (req.query.token) {
+        token = req.query.token;
+    }
+    if (!token) return res.status(401).json({ error: 'Access denied. Please log in.' });
+    jwt.verify(token, JWT_SECRET, (err, user) => {
+        if (err) return res.status(403).json({ error: 'Invalid or expired token.' });
+        req.user = user;
+        next();
+    });
+}, (req, res) => {
+    const filename = req.params.filename;
+    // Only allow safe filenames (no path traversal)
+    if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
+        return res.status(400).json({ error: 'Invalid filename.' });
+    }
+    res.sendFile(path.join(__dirname, 'uploads', filename));
+});
+
+// Rate limiter for auth routes (login, signup, password change)
+const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: 10, // 10 attempts per window
+    message: { error: 'Too many attempts. Please try again in 15 minutes.' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
+
+// General API rate limiter
+const apiLimiter = rateLimit({
+    windowMs: 1 * 60 * 1000, // 1 minute
+    max: 100, // 100 requests per minute
+    message: { error: 'Too many requests. Please slow down.' },
+    standardHeaders: true,
+    legacyHeaders: false
+});
 
 // 2. Database Connection Pool (imported from db.js)
 
@@ -141,12 +196,32 @@ function jsonToCSV(items, headers) {
 
 // --- AUTHENTICATION ROUTES ---
 
-app.post('/api/auth/register', async (req, res) => {
+// Input sanitization helper
+function sanitize(str) {
+    if (typeof str !== 'string') return str;
+    return str.replace(/[<>"'&]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#x27;', '&': '&amp;' })[c]);
+}
+
+// Email validation helper
+function isValidEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+}
+
+app.post('/api/auth/register', authLimiter, async (req, res) => {
     try {
-        const { name, email, password } = req.body;
+        let { name, email, password } = req.body;
         if (!name || !email || !password) {
             return res.status(400).json({ error: 'All fields are required.' });
         }
+        if (!isValidEmail(email)) {
+            return res.status(400).json({ error: 'Invalid email format.' });
+        }
+        if (password.length < 6) {
+            return res.status(400).json({ error: 'Password must be at least 6 characters.' });
+        }
+        // Sanitize name
+        name = sanitize(name.trim());
+        email = email.trim().toLowerCase();
 
         const hashedPassword = await bcrypt.hash(password, 10);
         await db.query(
@@ -163,7 +238,7 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', authLimiter, async (req, res) => {
     try {
         const { email, password } = req.body;
         const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
@@ -186,7 +261,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-app.post('/api/auth/change-password', authenticateToken, async (req, res) => {
+app.post('/api/auth/change-password', authenticateToken, authLimiter, async (req, res) => {
     try {
         const { currentPassword, newPassword } = req.body;
         if (!currentPassword || !newPassword) {
@@ -275,9 +350,11 @@ app.get('/api/tasks', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/tasks', authenticateToken, async (req, res) => {
+app.post('/api/tasks', authenticateToken, apiLimiter, async (req, res) => {
     try {
-        const { title, description, due_date, due_time } = req.body;
+        let { title, description, due_date, due_time } = req.body;
+        title = sanitize(title);
+        if (description) description = sanitize(description);
         // Combine date and time into a single DATETIME value
         const taskDateTime = due_time ? `${due_date} ${due_time}:00` : `${due_date} 09:00:00`;
         await db.query(
@@ -300,7 +377,7 @@ app.put('/api/tasks/:id/complete', authenticateToken, async (req, res) => {
     }
 });
 
-app.delete('/api/tasks/:id', authenticateToken, async (req, res) => {
+app.delete('/api/tasks/:id', authenticateToken, apiLimiter, async (req, res) => {
     try {
         const { id } = req.params;
         await db.query('DELETE FROM daily_tasks WHERE id = ? AND user_id = ?', [id, req.user.id]);
@@ -324,13 +401,12 @@ app.get('/api/projects', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/projects', authenticateToken, upload.single('document'), async (req, res) => {
+app.post('/api/projects', authenticateToken, apiLimiter, upload.single('document'), async (req, res) => {
     try {
-        const { software_name, launch_date, next_renewal_date, renewal_cycle, doc_type } = req.body;
+        let { software_name, launch_date, next_renewal_date, renewal_cycle, doc_type } = req.body;
+        software_name = sanitize(software_name);
         const file_name = req.file ? req.file.originalname : null;
         const file_path = req.file ? (req.file.path || req.file.filename) : null;
-
-        console.log('Saving subscription:', { software_name, launch_date, next_renewal_date, renewal_cycle, doc_type, file_name });
 
         await db.query(`
             INSERT INTO software_projects (user_id, software_name, launch_date, next_renewal_date, renewal_cycle, doc_type, file_name, file_path, status)
@@ -348,7 +424,7 @@ app.post('/api/projects', authenticateToken, upload.single('document'), async (r
     }
 });
 
-app.put('/api/projects/:id/renew', authenticateToken, upload.single('document'), async (req, res) => {
+app.put('/api/projects/:id/renew', authenticateToken, apiLimiter, upload.single('document'), async (req, res) => {
     try {
         const { id } = req.params;
         const { amount_paid, next_renewal_date, payment_method, notes } = req.body;
@@ -373,12 +449,17 @@ app.put('/api/projects/:id/renew', authenticateToken, upload.single('document'),
         }
 
         // Update renewal date and document on the project
-        const file_name = req.file ? req.file.originalname : null;
-        const file_path = req.file ? (req.file.path || req.file.filename) : null;
+        const new_file_name = req.file ? req.file.originalname : null;
+        const new_file_path = req.file ? (req.file.path || req.file.filename) : null;
 
-        if (file_path) {
+        // Use new file if uploaded, otherwise keep project's existing file
+        const file_name = new_file_name || project.file_name || null;
+        const file_path = new_file_path || project.file_path || null;
+        const doc_type = req.body.doc_type || project.doc_type || null;
+
+        if (new_file_path) {
             await db.query('UPDATE software_projects SET next_renewal_date = ?, file_name = ?, file_path = ? WHERE id = ? AND user_id = ?',
-                [nextRenewalStr, file_name, file_path, id, req.user.id]);
+                [nextRenewalStr, new_file_name, new_file_path, id, req.user.id]);
         } else {
             await db.query('UPDATE software_projects SET next_renewal_date = ? WHERE id = ? AND user_id = ?',
                 [nextRenewalStr, id, req.user.id]);
@@ -387,8 +468,8 @@ app.put('/api/projects/:id/renew', authenticateToken, upload.single('document'),
         // Try inserting with all columns; if columns are missing, fall back to basic insert
         try {
             await db.query(
-                'INSERT INTO payment_history (project_id, amount_paid, period_covered, payment_date, payment_method, notes) VALUES (?, ?, ?, CURDATE(), ?, ?)',
-                [id, amount_paid || 0, project.renewal_cycle, payment_method || null, notes || null]
+                'INSERT INTO payment_history (project_id, amount_paid, period_covered, payment_date, payment_method, notes, file_name, file_path, doc_type) VALUES (?, ?, ?, CURDATE(), ?, ?, ?, ?, ?)',
+                [id, amount_paid || 0, project.renewal_cycle, payment_method || null, notes || null, file_name || null, file_path || null, doc_type]
             );
         } catch (insertErr) {
             console.warn('Falling back to basic payment_history insert:', insertErr.message);
@@ -525,9 +606,11 @@ app.get('/api/reminders', authenticateToken, async (req, res) => {
     }
 });
 
-app.post('/api/reminders', authenticateToken, async (req, res) => {
+app.post('/api/reminders', authenticateToken, apiLimiter, async (req, res) => {
     try {
-        const { title, description, reminder_date, reminder_time, priority } = req.body;
+        let { title, description, reminder_date, reminder_time, priority } = req.body;
+        title = sanitize(title);
+        if (description) description = sanitize(description);
         if (!title || !reminder_date) {
             return res.status(400).json({ error: 'Title and date are required.' });
         }
@@ -565,7 +648,7 @@ app.put('/api/reminders/:id/complete', authenticateToken, async (req, res) => {
     }
 });
 
-app.delete('/api/reminders/:id', authenticateToken, async (req, res) => {
+app.delete('/api/reminders/:id', authenticateToken, apiLimiter, async (req, res) => {
     try {
         const { id } = req.params;
         await db.query('DELETE FROM reminders WHERE id = ? AND user_id = ?', [id, req.user.id]);
@@ -574,16 +657,16 @@ app.delete('/api/reminders/:id', authenticateToken, async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
-
 // --- EXPORT ROUTES ---
 
-app.get('/api/export/renewals', async (req, res) => {
+app.get('/api/export/renewals', authenticateToken, async (req, res) => {
     try {
         const [rows] = await db.query(`
             SELECT software_name, launch_date, next_renewal_date, renewal_cycle, status
             FROM software_projects
+            WHERE user_id = ?
             ORDER BY next_renewal_date ASC
-        `);
+        `, [req.user.id]);
         
         const headers = ['software_name', 'launch_date', 'next_renewal_date', 'renewal_cycle', 'status'];
         const csvData = jsonToCSV(rows, headers);
@@ -596,14 +679,15 @@ app.get('/api/export/renewals', async (req, res) => {
     }
 });
 
-app.get('/api/export/payments', async (req, res) => {
+app.get('/api/export/payments', authenticateToken, async (req, res) => {
     try {
         const [rows] = await db.query(`
             SELECT p.software_name, h.payment_date, h.amount_paid, h.period_covered
             FROM payment_history h
             JOIN software_projects p ON h.project_id = p.id
+            WHERE p.user_id = ?
             ORDER BY h.payment_date DESC
-        `);
+        `, [req.user.id]);
 
         const headers = ['software_name', 'payment_date', 'amount_paid', 'period_covered'];
         const csvData = jsonToCSV(rows, headers);
@@ -615,6 +699,23 @@ app.get('/api/export/payments', async (req, res) => {
         res.status(500).json({ error: error.message });
     }
 });
+
+// Auto-add file columns to payment_history if missing
+async function ensurePaymentHistoryFileColumns() {
+    const columns = [
+        { name: 'file_name', def: 'VARCHAR(255) DEFAULT NULL' },
+        { name: 'file_path', def: 'VARCHAR(255) DEFAULT NULL' },
+        { name: 'doc_type', def: 'VARCHAR(50) DEFAULT NULL' }
+    ];
+    for (const col of columns) {
+        try {
+            await db.query(`ALTER TABLE payment_history ADD COLUMN ${col.name} ${col.def}`);
+            console.log(`Added payment_history.${col.name} column.`);
+        } catch (err) {
+            // Column already exists — ignore
+        }
+    }
+}
 
 // Auto-create reminders table if it doesn't exist
 async function ensureRemindersTable() {
@@ -642,5 +743,6 @@ app.listen(PORT, async () => {
     console.log(`Server running on http://localhost:${PORT}`);
     await ensureRemindersTable();
     await ensurePushSubscriptionsTable();
+    await ensurePaymentHistoryFileColumns();
     require('./scheduler'); // Start the cron scheduler
 });

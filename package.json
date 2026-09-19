@@ -2,7 +2,7 @@
   "name": "task-reminder",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
@@ -18,12 +18,13 @@
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.7.0",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.3.0",
     "multer-storage-cloudinary": "^4.0.0",
     "mysql2": "^3.24.4",
     "node-cron": "^4.6.0",
-    "nodemailer": "^10.0.9",
     "web-push": "^3.6.7"
   },
   "devDependencies": {

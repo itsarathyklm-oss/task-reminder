@@ -1,10 +1,13 @@
-const CACHE_NAME = 'task-reminder-v2';
+const CACHE_NAME = 'task-reminder-v3';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
   '/app.js',
   '/logo.png',
-  '/manifest.json'
+  '/manifest.json',
+  '/icon-192.png',
+  '/icon-512.png',
+  '/apple-touch-icon.png'
 ];
 
 // Install: pre-cache static assets
