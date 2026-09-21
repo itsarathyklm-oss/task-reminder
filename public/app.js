@@ -978,6 +978,13 @@ async function fetchTasks() {
     renderDashboardTasks();
     if (typeof renderUpcomingSchedule === 'function') renderUpcomingSchedule();
     refreshNotifications();
+
+    // Fix overdue count: server uses NOW() in UTC but due_dates are stored in local time.
+    // Recalculate client-side using isOverdue() so stat card matches the dashboard.
+    const overdueCount = allTasks.filter(t => isOverdue(t)).length;
+    document.getElementById('statOverdueTasks').innerText = overdueCount;
+    const pendingCount = allTasks.filter(t => t.status === 'pending').length;
+    document.getElementById('statPendingTasks').innerText = pendingCount;
 }
 
 function isOverdue(task) {
