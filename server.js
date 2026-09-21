@@ -370,7 +370,7 @@ app.post('/api/tasks', authenticateToken, apiLimiter, async (req, res) => {
 app.put('/api/tasks/:id/complete', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        await db.query('UPDATE daily_tasks SET status = "completed" WHERE id = ? AND user_id = ?', [id, req.user.id]);
+        await db.query("UPDATE daily_tasks SET status = 'completed' WHERE id = ? AND user_id = ?", [id, req.user.id]);
         res.json({ message: 'Task marked as completed' });
     } catch (error) {
         res.status(500).json({ error: error.message });
@@ -641,7 +641,7 @@ app.post('/api/reminders', authenticateToken, apiLimiter, async (req, res) => {
 app.put('/api/reminders/:id/complete', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        await db.query('UPDATE reminders SET status = "completed" WHERE id = ? AND user_id = ?', [id, req.user.id]);
+        await db.query("UPDATE reminders SET status = 'completed' WHERE id = ? AND user_id = ?", [id, req.user.id]);
         res.json({ message: 'Reminder marked as completed.' });
     } catch (error) {
         res.status(500).json({ error: error.message });

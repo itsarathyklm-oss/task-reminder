@@ -849,6 +849,7 @@ async function completeReminder(id) {
     if (!confirmed) return;
     const res = await apiFetch('/api/reminders/' + id + '/complete', { method: 'PUT' });
     if (res.ok) { showToast('Reminder Completed', 'Reminder marked as done.', 'success'); fetchReminders(); }
+    else { const err = await res.json().catch(() => ({})); showToast('Error', err.error || 'Failed to complete reminder.', 'error'); }
 }
 
 async function deleteReminder(id) {
@@ -1084,7 +1085,7 @@ async function fetchLiveNotifications() {
                 // Tasks due today or tomorrow
                 else if (task.status === 'pending' && task.due_date) {
                     const due = parseDate(task.due_date);
-                    const diffDays = Math.ceil((due - new Date(now.toDateString())) / (1000 * 60 * 60 * 24));
+                    const diffDays = Math.floor((due - new Date(now.toDateString())) / (1000 * 60 * 60 * 24));
                     if (diffDays === 0) {
                         liveNotifications.push({
                             type: 'task_today',
@@ -1608,6 +1609,9 @@ async function completeTask(id) {
     if (res.ok) {
         showToast('Task Completed', 'Task has been marked as completed.', 'success');
         refreshDashboard();
+    } else {
+        const err = await res.json().catch(() => ({}));
+        showToast('Error', err.error || 'Failed to complete task.', 'error');
     }
 }
 
