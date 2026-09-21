@@ -955,13 +955,11 @@ async function fetchAnalytics() {
     const res = await apiFetch('/api/analytics');
     const data = await res.json();
 
-    const pending = data.pendingTasks || 0;
     const completed = data.completedTasks || 0;
-    const overdue = data.overdueTasks || 0;
     const activeSoftware = data.activeSoftware || 0;
 
-    document.getElementById('statPendingTasks').innerText = pending;
-    document.getElementById('statOverdueTasks').innerText = overdue;
+    // Note: pending and overdue counts are set by fetchTasks() client-side
+    // to avoid timezone mismatch (server UTC NOW() vs client local time)
     document.getElementById('statCompleted').innerText = completed;
     document.getElementById('statActiveSoftware').innerText = activeSoftware;
 }
