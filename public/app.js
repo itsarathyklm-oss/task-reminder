@@ -916,8 +916,47 @@ async function deleteReminder(id) {
     const confirmed = await showConfirmModal('Delete Reminder?', 'This action cannot be undone.', '🗑️', 'Yes, Delete', 'bg-red-500 hover:bg-red-600');
     if (!confirmed) return;
     const res = await apiFetch('/api/reminders/' + id, { method: 'DELETE' });
-    if (res.ok) { showToast('Reminder Deleted', 'Reminder has been removed.', 'warning'); fetchReminders(); }
+    if (res.ok) { showToast('Reminder Deleted', 'Reminder has been removed.', 'warning');        fetchReminders();
+    }
 }
+
+// --- First-run intro video (plays once per tab: first start + every new tab) ---
+const INTRO_FLAG_KEY = 'introVideoShown';
+
+function closeIntro() {
+    const overlay = document.getElementById('introOverlay');
+    const video = document.getElementById('introVideo');
+    if (!overlay || overlay.classList.contains('hidden')) return;
+    if (video) { try { video.pause(); } catch (e) { /* ignore */ } }
+    overlay.classList.add('hidden');
+    overlay.classList.remove('flex');
+}
+
+function showIntroOnce() {
+    let alreadySeen = true;
+    try { alreadySeen = !!sessionStorage.getItem(INTRO_FLAG_KEY); } catch (e) { alreadySeen = true; }
+    if (alreadySeen) return;
+
+    const overlay = document.getElementById('introOverlay');
+    const video = document.getElementById('introVideo');
+    if (!overlay || !video) return;
+
+    // Set the flag before playing: a refresh mid-video must never replay it
+    try { sessionStorage.setItem(INTRO_FLAG_KEY, '1'); } catch (e) { /* ignore */ }
+
+    overlay.classList.remove('hidden');
+    overlay.classList.add('flex');
+
+    video.onended = closeIntro;
+    video.onerror = closeIntro;
+    const playPromise = video.play();
+    if (playPromise && typeof playPromise.catch === 'function') {
+        playPromise.catch(() => closeIntro()); // autoplay refused or codec issue → never trap the user
+    }
+}
+
+document.addEventListener('DOMContentLoaded', showIntroOnce);
+
 
 async function completeReminderAndRefresh(id) {
     await completeReminder(id);
