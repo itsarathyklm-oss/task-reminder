@@ -83,6 +83,17 @@ function authFileUrl(filePath) {
     return '/uploads/' + filePath + '?token=' + encodeURIComponent(token);
 }
 
+// XSS protection: escape HTML special characters
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+// Escape for use inside inline onclick JS strings
+function escapeAttr(str) {
+    if (!str) return '';
+    return String(str).replace(/\\/g, '\\\\').replace(/'/g, '\\\'').replace(/"/g, '\\"');
+}
+
 // Safe date parser: handles '2026-09-16 12:00:00' (MySQL) as LOCAL time
 // Also handles ISO strings with timezone info (e.g. '2026-09-16T11:30:00.000Z')
 function parseDate(str) {
@@ -295,19 +306,23 @@ document.addEventListener('DOMContentLoaded', () => {
         btn.innerText = 'Saving...';
 
         const id = document.getElementById('editSubId').value;
-        const data = {
-            software_name: document.getElementById('editSubName').value,
-            launch_date: document.getElementById('editSubLaunch').value || null,
-            next_renewal_date: document.getElementById('editSubRenewal').value,
-            renewal_cycle: document.getElementById('editSubCycle').value,
-            doc_type: document.getElementById('editSubDocType').value || null
-        };
+
+        // Multipart body: supports both plain fields and an optional replacement file
+        const data = new FormData();
+        data.append('software_name', document.getElementById('editSubName').value);
+        data.append('launch_date', document.getElementById('editSubLaunch').value || '');
+        data.append('next_renewal_date', document.getElementById('editSubRenewal').value);
+        data.append('renewal_cycle', document.getElementById('editSubCycle').value);
+        data.append('doc_type', document.getElementById('editSubDocType').value || '');
+        const editFileInput = document.getElementById('editSubFile');
+        if (editFileInput && editFileInput.files && editFileInput.files.length > 0) {
+            data.append('document', editFileInput.files[0]);
+        }
 
         try {
             const res = await apiFetch(`/api/projects/${id}`, {
                 method: 'PUT',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(data)
+                body: data
             });
             const result = await res.json();
             if (res.ok) {
@@ -482,8 +497,8 @@ function globalSearch() {
                 <div onclick="searchNav('task',${i})" class="px-3 py-2.5 hover:bg-slate-50 cursor-pointer flex items-center gap-2.5 transition-all border-b border-slate-50">
                     <span class="text-sm shrink-0">${r.icon}</span>
                     <div class="flex-1 min-w-0">
-                        <p class="text-xs font-bold text-slate-800 truncate">${r.title}</p>
-                        <p class="text-[10px] text-slate-400">${r.subtitle}</p>
+                        <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(r.title)}</p>
+                        <p class="text-[10px] text-slate-400">${escapeHtml(r.subtitle)}</p>
                     </div>
                 </div>
             `;
@@ -497,8 +512,8 @@ function globalSearch() {
                 <div onclick="searchNav('sub',${i})" class="px-3 py-2.5 hover:bg-slate-50 cursor-pointer flex items-center gap-2.5 transition-all border-b border-slate-50">
                     <span class="text-sm shrink-0">${r.icon}</span>
                     <div class="flex-1 min-w-0">
-                        <p class="text-xs font-bold text-slate-800 truncate">${r.title}</p>
-                        <p class="text-[10px] text-slate-400">${r.subtitle}</p>
+                        <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(r.title)}</p>
+                        <p class="text-[10px] text-slate-400">${escapeHtml(r.subtitle)}</p>
                     </div>
                 </div>
             `;
@@ -704,6 +719,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
 let allReminders = [];
 let currentReminderFilter = 'pending';
+let reminderCurrentPage = 1;
+const reminderPageSize = 5;
 
 async function fetchDashboardReminders() {
     try {
@@ -769,10 +786,10 @@ function renderDashboardReminders(reminders) {
         var item = '<li class="p-3 ' + bgColor + ' border-l-[3px] rounded shadow-sm flex justify-between items-center">';
         item += '<div>';
         item += '<div class="flex items-center gap-2">';
-        item += '<strong class="text-gray-800 text-sm">' + r.title + '</strong>';
+        item += '<strong class="text-gray-800 text-sm">' + escapeHtml(r.title) + '</strong>';
         item += '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full ' + badgeBg + '">' + dayLabel + '</span>';
         item += '</div>';
-        if (r.description) item += '<p class="text-xs font-semibold text-slate-600 mt-0.5">' + r.description + '</p>';
+        if (r.description) item += '<p class="text-xs font-semibold text-slate-600 mt-0.5">' + escapeHtml(r.description) + '</p>';
         item += '<p class="text-xs text-gray-500 mt-0.5">' + dateStr + ' ' + timeStr + '</p>';
         item += '</div>';
         item += '<div class="flex items-center gap-1.5 shrink-0 ml-2">';
@@ -809,14 +826,22 @@ function renderRemindersList() {
 
     if (countEl) countEl.textContent = filtered.length + ' reminder' + (filtered.length !== 1 ? 's' : '');
 
+    // Pagination (same pattern as My Tasks)
+    var totalPages = Math.ceil(filtered.length / reminderPageSize) || 1;
+    if (reminderCurrentPage > totalPages) reminderCurrentPage = totalPages;
+    if (reminderCurrentPage < 1) reminderCurrentPage = 1;
+    var startIdx = (reminderCurrentPage - 1) * reminderPageSize;
+    var paged = filtered.slice(startIdx, startIdx + reminderPageSize);
+
     if (filtered.length === 0) {
         list.innerHTML = '<div class="p-6 text-center text-slate-400 text-xs">' + (allReminders.length === 0 ? 'No reminders yet. Add one!' : 'No ' + currentReminderFilter + ' reminders') + '</div>';
+        renderReminderPagination(0, 1);
         return;
     }
 
     var html = '';
-    for (var i = 0; i < filtered.length; i++) {
-        var r = filtered[i];
+    for (var i = 0; i < paged.length; i++) {
+        var r = paged[i];
         var d = parseDate(r.reminder_date);
         var dateStr = isNaN(d.getTime()) ? (r.reminder_date || '') : d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', year: 'numeric' });
         var timeStr = isNaN(d.getTime()) ? '' : d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
@@ -831,8 +856,8 @@ function renderRemindersList() {
 
         html += '<div class="flex items-start gap-3 ' + bgColor + ' border-l-[3px] rounded-lg p-3">';
         html += '<div class="flex-1 min-w-0">';
-        html += '<p class="text-xs font-bold text-slate-800 ' + (isCompleted ? 'line-through' : '') + '">' + r.title + '</p>';
-        if (r.description) html += '<p class="text-xs font-semibold text-slate-600 mt-0.5">' + r.description + '</p>';
+        html += '<p class="text-xs font-bold text-slate-800 ' + (isCompleted ? 'line-through' : '') + '">' + escapeHtml(r.title) + '</p>';
+        if (r.description) html += '<p class="text-xs font-semibold text-slate-600 mt-0.5">' + escapeHtml(r.description) + '</p>';
         html += '<p class="text-[10px] text-slate-400 mt-1">' + dateStr + ' ' + timeStr + '</p>';
         html += '</div>';
         html += '<div class="flex items-center gap-1.5 shrink-0">';
@@ -842,6 +867,41 @@ function renderRemindersList() {
         html += '</div>';
     }
     list.innerHTML = html;
+
+    renderReminderPagination(filtered.length, totalPages);
+}
+
+function renderReminderPagination(totalItems, totalPages) {
+    const container = document.getElementById('reminderPagination');
+    if (!container) return;
+
+    if (totalItems <= reminderPageSize) {
+        container.innerHTML = `<span class="text-[10px] text-slate-400">Showing ${totalItems} of ${totalItems} reminders</span>`;
+        return;
+    }
+
+    const start = (reminderCurrentPage - 1) * reminderPageSize + 1;
+    const end = Math.min(reminderCurrentPage * reminderPageSize, totalItems);
+
+    let pageButtons = '';
+    for (let i = 1; i <= totalPages; i++) {
+        const isActive = i === reminderCurrentPage;
+        pageButtons += `<button onclick="goToReminderPage(${i})" class="w-7 h-7 rounded-lg text-[10px] font-bold ${isActive ? 'bg-orange-500 text-white shadow-sm' : 'text-slate-500 hover:bg-slate-100'} transition-all">${i}</button>`;
+    }
+
+    container.innerHTML = `
+        <span class="text-[10px] text-slate-400">Showing ${start}-${end} of ${totalItems}</span>
+        <div class="flex items-center gap-1">
+            <button onclick="goToReminderPage(${reminderCurrentPage - 1})" ${reminderCurrentPage <= 1 ? 'disabled' : ''} class="w-7 h-7 rounded-lg text-[10px] font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition-all">◀</button>
+            ${pageButtons}
+            <button onclick="goToReminderPage(${reminderCurrentPage + 1})" ${reminderCurrentPage >= totalPages ? 'disabled' : ''} class="w-7 h-7 rounded-lg text-[10px] font-bold text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed transition-all">▶</button>
+        </div>
+    `;
+}
+
+function goToReminderPage(page) {
+    reminderCurrentPage = page;
+    renderRemindersList();
 }
 
 async function completeReminder(id) {
@@ -955,12 +1015,10 @@ async function fetchAnalytics() {
     const res = await apiFetch('/api/analytics');
     const data = await res.json();
 
-    const completed = data.completedTasks || 0;
     const activeSoftware = data.activeSoftware || 0;
 
-    // Note: pending and overdue counts are set by fetchTasks() client-side
+    // Note: pending, overdue and completed counts are set by fetchTasks() client-side
     // to avoid timezone mismatch (server UTC NOW() vs client local time)
-    document.getElementById('statCompleted').innerText = completed;
     document.getElementById('statActiveSoftware').innerText = activeSoftware;
 }
 
@@ -983,6 +1041,18 @@ async function fetchTasks() {
     document.getElementById('statOverdueTasks').innerText = overdueCount;
     const pendingCount = allTasks.filter(t => t.status === 'pending').length;
     document.getElementById('statPendingTasks').innerText = pendingCount;
+
+    // Monthly completed count: tasks completed in the CURRENT calendar month (local time).
+    // Resets to 0 on the 1st; the full history still shows when the card is clicked.
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+    const completedThisMonth = allTasks.filter(t => {
+        if (t.status !== 'completed' || !t.completed_at) return false;
+        const done = parseDate(t.completed_at);
+        return !isNaN(done.getTime()) && done >= monthStart && done < monthEnd;
+    }).length;
+    document.getElementById('statCompleted').innerText = completedThisMonth;
 }
 
 function isOverdue(task) {
@@ -1206,8 +1276,8 @@ function renderNotifDropdown() {
                 <div class="flex items-start gap-2.5">
                     <span class="text-sm mt-0.5 shrink-0">${n.icon}</span>
                     <div class="flex-1 min-w-0">
-                        <p class="text-xs font-bold text-slate-800 truncate">${n.title}</p>
-                        <p class="text-[10px] text-slate-500 mt-0.5">${n.message}</p>
+                        <p class="text-xs font-bold text-slate-800 truncate">${escapeHtml(n.title)}</p>
+                        <p class="text-[10px] text-slate-500 mt-0.5">${escapeHtml(n.message)}</p>
                     </div>
                     <button onclick="event.stopPropagation(); dismissNotification(liveNotifications[${idx}])" class="text-slate-300 hover:text-red-500 text-xs shrink-0 mt-0.5" title="Dismiss">✕</button>
                 </div>
@@ -1359,10 +1429,10 @@ function renderDashboardTasks(filter) {
             <li class="p-3 flex items-center justify-between ${bgColor}">
                 <div>
                     <div class="flex items-center gap-2">
-                        <p class="text-xs font-bold text-slate-800">${task.title}</p>
+                        <p class="text-xs font-bold text-slate-800">${escapeHtml(task.title)}</p>
                         ${badge ? '<span class="text-[10px] font-bold px-2 py-0.5 rounded-full ' + badgeBg + '">' + badge + '</span>' : ''}
                     </div>
-                    <span class="text-xs font-semibold text-slate-600">${task.description || ''} &middot; ${date}${timeStr}</span>
+                    <span class="text-xs font-semibold text-slate-600">${escapeHtml(task.description)} &middot; ${date}${timeStr}</span>
                 </div>
                 <button onclick="completeTask(${task.id})" class="text-[10px] bg-emerald-500 text-white font-bold px-2.5 py-1 rounded-lg hover:bg-emerald-600 transition-all">
                     ✓ Completed
@@ -1406,8 +1476,8 @@ function renderTasks() {
             list.innerHTML += `
                 <li class="p-3 bg-gray-50 border-l-4 ${isCompleted ? 'border-gray-400 opacity-60' : 'border-blue-500'} rounded shadow-sm flex justify-between items-center">
                     <div>
-                        <strong class="text-gray-800 ${isCompleted ? 'line-through' : ''}">${task.title}</strong>
-                        <p class="text-sm font-semibold text-slate-700 ${isCompleted ? 'line-through' : ''}">${task.description || ''}</p>
+                        <strong class="text-gray-800 ${isCompleted ? 'line-through' : ''}">${escapeHtml(task.title)}</strong>
+                        <p class="text-sm font-semibold text-slate-700 ${isCompleted ? 'line-through' : ''}">${escapeHtml(task.description)}</p>
                         <span class="text-xs font-bold text-gray-400">${date}${timeStr}</span>
                     </div>
                     <div class="flex items-center gap-2">
@@ -1481,6 +1551,7 @@ function setTaskFilter(status) {
 
 function setReminderFilter(status) {
     currentReminderFilter = status;
+    reminderCurrentPage = 1;
     ['All', 'Pending', 'Completed'].forEach(btn => {
         const el = document.getElementById('rFilter' + btn);
         if (!el) return;
@@ -1693,7 +1764,7 @@ function renderProjects() {
                     <li class="p-3 bg-gray-50 border-l-4 border-l-green-400 rounded shadow-sm flex justify-between items-center">
                         <div>
                             <div class="flex items-center gap-2">
-                                <strong class="text-gray-800 text-sm">${proj.software_name}</strong>
+                                <strong class="text-gray-800 text-sm">${escapeHtml(proj.software_name)}</strong>
                                 <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${badgeBg}">${dayLabel}</span>
                                 <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-green-100 text-green-700">Active</span>
                             </div>
@@ -1703,7 +1774,7 @@ function renderProjects() {
                         <div class="flex items-center gap-1.5 shrink-0 ml-2">
                             <button onclick="toggleSubscriptionStatus(${proj.id}, 'inactive')" title="Deactivate" class="text-[10px] bg-amber-500 text-white font-semibold px-2 py-1.5 rounded-lg hover:bg-amber-600 shadow-sm">⏸ Pause</button>
                             <button onclick="openEditSubscription(${proj.id})" title="Edit" class="text-[10px] bg-blue-500 text-white font-semibold px-2 py-1.5 rounded-lg hover:bg-blue-600 shadow-sm">✏️ Edit</button>
-                            <button onclick="viewPaymentHistory(${proj.id}, '${proj.software_name}')" class="text-[10px] bg-slate-600 text-white font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-700 shadow-sm">📜 History</button>
+                            <button onclick="viewPaymentHistory(${proj.id}, '${escapeAttr(proj.software_name)}')" class="text-[10px] bg-slate-600 text-white font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-700 shadow-sm">📜 History</button>
                             <button onclick="renewSoftware(${proj.id})" class="text-[10px] bg-green-600 text-white font-semibold px-2.5 py-1.5 rounded-lg hover:bg-green-700 shadow-sm">✓ Mark Paid</button>
                         </div>
                     </li>
@@ -1718,7 +1789,7 @@ function renderProjects() {
                     <li class="p-3 bg-slate-50 border-l-4 border-l-slate-300 rounded shadow-sm flex justify-between items-center opacity-75">
                         <div>
                             <div class="flex items-center gap-2">
-                                <strong class="text-gray-600 text-sm">${proj.software_name}</strong>
+                                <strong class="text-gray-600 text-sm">${escapeHtml(proj.software_name)}</strong>
                                 <span class="text-[9px] font-bold px-1.5 py-0.5 rounded-full bg-slate-200 text-slate-600">Paused</span>
                             </div>
                             <p class="text-xs text-gray-400 mt-0.5">Cycle: ${proj.renewal_cycle} &middot; Launched: ${launchDate} &middot; Renews: ${date}</p>
@@ -1727,7 +1798,7 @@ function renderProjects() {
                         <div class="flex items-center gap-1.5 shrink-0 ml-2">
                             <button onclick="toggleSubscriptionStatus(${proj.id}, 'active')" title="Activate" class="text-[10px] bg-green-500 text-white font-semibold px-2 py-1.5 rounded-lg hover:bg-green-600 shadow-sm">▶ Resume</button>
                             <button onclick="openEditSubscription(${proj.id})" title="Edit" class="text-[10px] bg-blue-500 text-white font-semibold px-2 py-1.5 rounded-lg hover:bg-blue-600 shadow-sm">✏️ Edit</button>
-                            <button onclick="viewPaymentHistory(${proj.id}, '${proj.software_name}')" class="text-[10px] bg-slate-600 text-white font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-700 shadow-sm">📜 History</button>
+                            <button onclick="viewPaymentHistory(${proj.id}, '${escapeAttr(proj.software_name)}')" class="text-[10px] bg-slate-600 text-white font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-700 shadow-sm">📜 History</button>
                         </div>
                     </li>
                 `;
@@ -1772,14 +1843,14 @@ function renderProjects() {
             <li class="p-3 bg-gray-50 border-l-4 ${borderColor} rounded shadow-sm flex justify-between items-center">
                 <div>
                     <div class="flex items-center gap-2">
-                        <strong class="text-gray-800 text-sm">${proj.software_name}</strong>
+                        <strong class="text-gray-800 text-sm">${escapeHtml(proj.software_name)}</strong>
                         <span class="text-[10px] font-bold px-2 py-0.5 rounded-full ${badgeBg}">${dayLabel}</span>
                     </div>
                     <p class="text-xs text-gray-500 uppercase font-semibold mt-0.5">Cycle: ${proj.renewal_cycle} · Renews: ${date}</p>
                     ${documentLink}
                 </div>
                 <div class="flex items-center gap-1.5 shrink-0 ml-2">
-                    <button onclick="viewPaymentHistory(${proj.id}, '${proj.software_name}')" class="text-[10px] bg-slate-600 text-white font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-700 shadow-sm">
+                    <button onclick="viewPaymentHistory(${proj.id}, '${escapeAttr(proj.software_name)}')" class="text-[10px] bg-slate-600 text-white font-semibold px-2.5 py-1.5 rounded-lg hover:bg-slate-700 shadow-sm">
                         📜 History
                     </button>
                     <button onclick="renewSoftware(${proj.id})" class="text-[10px] bg-green-600 text-white font-semibold px-2.5 py-1.5 rounded-lg hover:bg-green-700 shadow-sm">
@@ -1838,6 +1909,19 @@ function openEditSubscription(id) {
     document.getElementById('editSubRenewal').value = proj.next_renewal_date ? proj.next_renewal_date.split('T')[0] : '';
     document.getElementById('editSubCycle').value = proj.renewal_cycle;
     document.getElementById('editSubDocType').value = proj.doc_type || '';
+    // Optional file replacement: reset picker and show which file is currently attached
+    const editFileInput = document.getElementById('editSubFile');
+    if (editFileInput) editFileInput.value = '';
+    const editCurFile = document.getElementById('editSubCurrentFile');
+    if (editCurFile) {
+        if (proj.file_name) {
+            editCurFile.textContent = `Current file: ${proj.file_name} — choose a file below to replace it`;
+            editCurFile.classList.remove('hidden');
+        } else {
+            editCurFile.textContent = 'No document attached yet.';
+            editCurFile.classList.remove('hidden');
+        }
+    }
     document.getElementById('editSubError').classList.add('hidden');
     document.getElementById('editSubscriptionModal').classList.remove('hidden');
 }
@@ -1847,6 +1931,26 @@ function closeEditSubscriptionModal() {
 }
 
 async function toggleSubscriptionStatus(id, newStatus) {
+    // On-screen confirmation before pausing or resuming a subscription
+    if (newStatus === 'inactive') {
+        const confirmed = await showConfirmModal(
+            'Pause Subscription?',
+            'Renewal reminders for this subscription will stop until you resume it.',
+            '⏸️',
+            'Yes, Pause',
+            'bg-amber-500 hover:bg-amber-600'
+        );
+        if (!confirmed) return;
+    } else if (newStatus === 'active') {
+        const confirmed = await showConfirmModal(
+            'Resume Subscription?',
+            'Renewal reminders will start again for this subscription.',
+            '▶️',
+            'Yes, Resume',
+            'bg-green-500 hover:bg-green-600'
+        );
+        if (!confirmed) return;
+    }
     try {
         const res = await apiFetch(`/api/projects/${id}/status`, {
             method: 'PUT',

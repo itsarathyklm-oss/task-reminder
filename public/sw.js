@@ -1,4 +1,4 @@
-const CACHE_NAME = 'task-reminder-v3';
+const CACHE_NAME = 'task-reminder-v4';
 const STATIC_ASSETS = [
   '/',
   '/index.html',
@@ -41,6 +41,28 @@ self.addEventListener('fetch', (event) => {
 
   // Skip non-GET requests
   if (request.method !== 'GET') return;
+
+  // PAGE REFRESH / NAVIGATION: always go to the SERVER first, so pressing
+  // refresh (or opening the tab fresh) shows the latest deployed version.
+  // The cache is only used as an offline fallback.
+  if (request.mode === 'navigate' || url.pathname === '/app.js') {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          if (response.ok && url.origin === self.location.origin) {
+            const clone = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          }
+          return response;
+        })
+        .catch(() =>
+          caches.match(request).then(
+            (cached) => cached || caches.match('/index.html')
+          )
+        )
+    );
+    return;
+  }
 
   // Network-first for API calls and dynamic content
   if (url.pathname.startsWith('/api/')) {

@@ -4,7 +4,7 @@ const path = require('path');
 const multer = require('multer');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const webPush = require('web-push');
+const { VAPID_PUBLIC_KEY, sendPushNotification } = require('./lib/push');
 const cors = require('cors');
 const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
@@ -12,45 +12,7 @@ const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
 const db = require('./db');
 
-// Push Notification Configuration
-const VAPID_PUBLIC_KEY = process.env.VAPID_PUBLIC_KEY;
-const VAPID_PRIVATE_KEY = process.env.VAPID_PRIVATE_KEY;
-
-if (VAPID_PUBLIC_KEY && VAPID_PRIVATE_KEY) {
-    webPush.setVapidDetails(
-        process.env.VAPID_EMAIL || 'mailto:admin@taskreminder.app',
-        VAPID_PUBLIC_KEY,
-        VAPID_PRIVATE_KEY
-    );
-}
-
-// Helper to send push notification to a user
-async function sendPushNotification(userId, title, body, url = '/') {
-    if (!VAPID_PUBLIC_KEY || !VAPID_PRIVATE_KEY) return;
-    try {
-        const [subscriptions] = await db.query(
-            'SELECT * FROM push_subscriptions WHERE user_id = ?',
-            [userId]
-        );
-        for (const sub of subscriptions) {
-            try {
-                await webPush.sendNotification(
-                    { endpoint: sub.endpoint, keys: JSON.parse(sub.push_keys) },
-                    JSON.stringify({ title, body, url })
-                );
-            } catch (err) {
-                // If subscription is expired or invalid, remove it
-                if (err.statusCode === 404 || err.statusCode === 410) {
-                    await db.query('DELETE FROM push_subscriptions WHERE id = ?', [sub.id]);
-                } else {
-                    console.error('Push notification error:', err.message);
-                }
-            }
-        }
-    } catch (err) {
-        console.error('sendPushNotification error:', err.message);
-    }
-}
+// Push notifications: shared VAPID setup + sendPushNotification live in ./lib/push.js
 
 // Ensure push_subscriptions table exists
 async function ensurePushSubscriptionsTable() {
@@ -107,13 +69,31 @@ app.get('/uploads/:filename', (req, res, next) => {
         req.user = user;
         next();
     });
-}, (req, res) => {
+}, async (req, res) => {
     const filename = req.params.filename;
     // Only allow safe filenames (no path traversal)
     if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
         return res.status(400).json({ error: 'Invalid filename.' });
     }
-    res.sendFile(path.join(__dirname, 'uploads', filename));
+    try {
+        // OWNERSHIP CHECK: the file must belong to the logged-in user
+        const [ownProject] = await db.query(
+            'SELECT id FROM software_projects WHERE (file_path = ? OR file_name = ?) AND user_id = ? LIMIT 1',
+            [filename, filename, req.user.id]
+        );
+        const [ownPayment] = await db.query(
+            `SELECT h.id FROM payment_history h
+             JOIN software_projects p ON h.project_id = p.id
+             WHERE (h.file_path = ? OR h.file_name = ?) AND p.user_id = ? LIMIT 1`,
+            [filename, filename, req.user.id]
+        );
+        if (ownProject.length === 0 && ownPayment.length === 0) {
+            return res.status(404).json({ error: 'File not found.' });
+        }
+        res.sendFile(path.join(__dirname, 'uploads', filename));
+    } catch (error) {
+        serverError(res, error, 'Upload file lookup failed');
+    }
 });
 
 // Rate limiter for auth routes (login, signup, password change)
@@ -180,6 +160,14 @@ function authenticateToken(req, res, next) {
     });
 }
 
+// 4b. Safe error responder — log full details server-side, send a generic message to the client
+function serverError(res, error, context = 'API error') {
+    console.error(`${context}:`, (error && error.stack) || error);
+    if (!res.headersSent) {
+        res.status(500).json({ error: 'Something went wrong. Please try again.' });
+    }
+}
+
 // 5. CSV Converter Helper
 function jsonToCSV(items, headers) {
     const headerRow = headers.join(',') + '\n';
@@ -234,7 +222,7 @@ app.post('/api/auth/register', authLimiter, async (req, res) => {
         if (error.code === 'ER_DUP_ENTRY') {
             return res.status(400).json({ error: 'Email already exists.' });
         }
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -257,7 +245,7 @@ app.post('/api/auth/login', authLimiter, async (req, res) => {
 
         res.json({ token, user: { id: user.id, name: user.name, email: user.email } });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -283,7 +271,7 @@ app.post('/api/auth/change-password', authenticateToken, authLimiter, async (req
 
         res.json({ message: 'Password updated successfully.' });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -315,7 +303,7 @@ app.post('/api/push/subscribe', authenticateToken, async (req, res) => {
 
         res.json({ message: 'Push subscription saved.' });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -332,7 +320,7 @@ app.delete('/api/push/unsubscribe', authenticateToken, async (req, res) => {
         }
         res.json({ message: 'Push subscription removed.' });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -346,7 +334,7 @@ app.get('/api/tasks', authenticateToken, async (req, res) => {
         );
         res.json(tasks);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -363,17 +351,17 @@ app.post('/api/tasks', authenticateToken, apiLimiter, async (req, res) => {
         );
         res.status(201).json({ message: 'Task created successfully' });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
 app.put('/api/tasks/:id/complete', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        await db.query("UPDATE daily_tasks SET status = 'completed' WHERE id = ? AND user_id = ?", [id, req.user.id]);
+        await db.query("UPDATE daily_tasks SET status = 'completed', completed_at = NOW() WHERE id = ? AND user_id = ?", [id, req.user.id]);
         res.json({ message: 'Task marked as completed' });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -383,7 +371,7 @@ app.delete('/api/tasks/:id', authenticateToken, apiLimiter, async (req, res) => 
         await db.query('DELETE FROM daily_tasks WHERE id = ? AND user_id = ?', [id, req.user.id]);
         res.json({ message: 'Task deleted successfully' });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -397,7 +385,7 @@ app.get('/api/projects', authenticateToken, async (req, res) => {
         );
         res.json(projects);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -415,8 +403,8 @@ app.post('/api/projects', authenticateToken, apiLimiter, upload.single('document
 
         res.status(201).json({ message: 'Software project added successfully' });
     } catch (error) {
-        console.error('Error saving subscription:', error.message);
-        let userMessage = error.message;
+        console.error('Error saving subscription:', error.stack || error.message);
+        let userMessage = 'Something went wrong. Please try again.';
         if (error.message.includes('Unknown column')) {
             userMessage = 'Database is missing required columns. Please run migrate.sql to update your database schema.';
         }
@@ -481,8 +469,8 @@ app.put('/api/projects/:id/renew', authenticateToken, apiLimiter, upload.single(
 
         res.json({ message: 'Renewal updated', next_renewal_date: nextRenewalStr });
     } catch (error) {
-        console.error('Error updating renewal:', error.message);
-        let userMessage = error.message;
+        console.error('Error updating renewal:', error.stack || error.message);
+        let userMessage = 'Something went wrong. Please try again.';
         if (error.message.includes('Unknown column')) {
             userMessage = 'Database is missing required columns. Please run migrate.sql to update your database schema.';
         }
@@ -490,7 +478,7 @@ app.put('/api/projects/:id/renew', authenticateToken, apiLimiter, upload.single(
     }
 });
 
-app.put('/api/projects/:id', authenticateToken, async (req, res) => {
+app.put('/api/projects/:id', authenticateToken, upload.single('document'), async (req, res) => {
     try {
         const { id } = req.params;
         const { software_name, launch_date, next_renewal_date, renewal_cycle, doc_type } = req.body;
@@ -498,15 +486,25 @@ app.put('/api/projects/:id', authenticateToken, async (req, res) => {
         const [projects] = await db.query('SELECT * FROM software_projects WHERE id = ? AND user_id = ?', [id, req.user.id]);
         if (projects.length === 0) return res.status(404).json({ error: 'Project not found' });
 
+        const project = projects[0];
+
+        // Optional file replacement: keep the existing file unless a new one is uploaded
+        const new_file_name = req.file ? req.file.originalname : null;
+        // Local disk: store the bare filename (what the /uploads link builder expects);
+        // Cloudinary: req.file.path is the full public URL — store that instead
+        const new_file_path = req.file ? (req.file.path && req.file.path.startsWith('http') ? req.file.path : req.file.filename) : null;
+        const file_name = new_file_name || project.file_name;
+        const file_path = new_file_path || project.file_path;
+
         await db.query(
-            'UPDATE software_projects SET software_name = ?, launch_date = ?, next_renewal_date = ?, renewal_cycle = ?, doc_type = ? WHERE id = ? AND user_id = ?',
-            [software_name, launch_date || null, next_renewal_date, renewal_cycle, doc_type || null, id, req.user.id]
+            'UPDATE software_projects SET software_name = ?, launch_date = ?, next_renewal_date = ?, renewal_cycle = ?, doc_type = ?, file_name = ?, file_path = ? WHERE id = ? AND user_id = ?',
+            [software_name, launch_date || null, next_renewal_date, renewal_cycle, doc_type || null, file_name, file_path, id, req.user.id]
         );
 
         res.json({ message: 'Subscription updated successfully' });
     } catch (error) {
         console.error('Error updating subscription:', error.message);
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -527,7 +525,7 @@ app.put('/api/projects/:id/status', authenticateToken, async (req, res) => {
         res.json({ message: `Subscription ${status === 'active' ? 'activated' : 'deactivated'}` });
     } catch (error) {
         console.error('Error updating subscription status:', error.message);
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -543,7 +541,7 @@ app.get('/api/projects/:id/payments', authenticateToken, async (req, res) => {
         );
         res.json(history);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -559,14 +557,14 @@ app.get('/api/notifications', authenticateToken, async (req, res) => {
         `, [req.user.id]);
         res.json(alerts);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
 app.get('/api/analytics', authenticateToken, async (req, res) => {
     try {
         const [[tasks]] = await db.query("SELECT COUNT(*) as pending_tasks FROM daily_tasks WHERE user_id = ? AND status = 'pending'", [req.user.id]);
-        const [[completed]] = await db.query("SELECT COUNT(*) as completed_tasks FROM daily_tasks WHERE user_id = ? AND status = 'completed'", [req.user.id]);
+        const [[completed]] = await db.query("SELECT COUNT(*) as completed_tasks FROM daily_tasks WHERE user_id = ? AND status = 'completed' AND completed_at >= DATE_FORMAT(NOW(), '%Y-%m-01')", [req.user.id]);
         const [[overdue]] = await db.query("SELECT COUNT(*) as overdue_tasks FROM daily_tasks WHERE user_id = ? AND status = 'pending' AND due_date < NOW()", [req.user.id]);
         const [[software]] = await db.query("SELECT COUNT(*) as active_software FROM software_projects WHERE user_id = ? AND status = 'active'", [req.user.id]);
         const [[payments]] = await db.query(`
@@ -584,7 +582,7 @@ app.get('/api/analytics', authenticateToken, async (req, res) => {
             totalSpend: payments.total_spend
         });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -602,7 +600,7 @@ app.get('/api/reminders', authenticateToken, async (req, res) => {
         if (error.message.includes('doesn\'t exist') || error.message.includes('does not exist')) {
             return res.json([]);
         }
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -631,10 +629,10 @@ app.post('/api/reminders', authenticateToken, apiLimiter, async (req, res) => {
                 );
                 return res.status(201).json({ message: 'Reminder added successfully.' });
             } catch (retryErr) {
-                return res.status(500).json({ error: 'Failed to create reminders table. ' + retryErr.message });
+                return serverError(res, retryErr, 'Failed to create reminders table');
             }
         }
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -644,7 +642,7 @@ app.put('/api/reminders/:id/complete', authenticateToken, async (req, res) => {
         await db.query("UPDATE reminders SET status = 'completed' WHERE id = ? AND user_id = ?", [id, req.user.id]);
         res.json({ message: 'Reminder marked as completed.' });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -654,7 +652,7 @@ app.delete('/api/reminders/:id', authenticateToken, apiLimiter, async (req, res)
         await db.query('DELETE FROM reminders WHERE id = ? AND user_id = ?', [id, req.user.id]);
         res.json({ message: 'Reminder deleted.' });
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 // --- EXPORT ROUTES ---
@@ -675,7 +673,7 @@ app.get('/api/export/renewals', authenticateToken, async (req, res) => {
         res.setHeader('Content-Disposition', 'attachment; filename="software_renewals.csv"');
         res.status(200).send(csvData);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -696,7 +694,7 @@ app.get('/api/export/payments', authenticateToken, async (req, res) => {
         res.setHeader('Content-Disposition', 'attachment; filename="payment_history.csv"');
         res.status(200).send(csvData);
     } catch (error) {
-        res.status(500).json({ error: error.message });
+        serverError(res, error);
     }
 });
 
@@ -714,6 +712,26 @@ async function ensurePaymentHistoryFileColumns() {
         } catch (err) {
             // Column already exists — ignore
         }
+    }
+}
+
+// Monthly completed counter: add completed_at column and stamp legacy rows once
+async function ensureTaskCompletedAtColumn() {
+    try {
+        await db.query(`ALTER TABLE daily_tasks ADD COLUMN completed_at TIMESTAMP NULL DEFAULT NULL`);
+        console.log('Added daily_tasks.completed_at column.');
+    } catch (err) {
+        if (!err.message.includes('Duplicate column name')) {
+            console.warn('Could not add daily_tasks.completed_at:', err.message);
+            return; // column missing for another reason — skip backfill
+        }
+    }
+    try {
+        // One-time backfill: only touches rows with no timestamp, so it never re-stamps
+        const [result] = await db.query(`UPDATE daily_tasks SET completed_at = NOW() WHERE status = 'completed' AND completed_at IS NULL`);
+        if (result.affectedRows > 0) console.log(`Stamped completed_at on ${result.affectedRows} legacy completed task(s).`);
+    } catch (err) {
+        console.warn('Could not backfill completed_at:', err.message);
     }
 }
 
@@ -737,6 +755,22 @@ async function ensureRemindersTable() {
     }
 }
 
+// --- GLOBAL ERROR HANDLING (must stay after all routes) ---
+app.use((err, req, res, next) => {
+    console.error(`Unhandled error on ${req.method} ${req.originalUrl}:`, (err && err.stack) || err);
+    if (res.headersSent) return next(err);
+    res.status(500).json({ error: 'Something went wrong. Please try again.' });
+});
+
+// Process-level safety net: never die silently
+process.on('unhandledRejection', (reason) => {
+    console.error('Unhandled promise rejection:', (reason && reason.stack) || reason);
+});
+process.on('uncaughtException', (err) => {
+    console.error('Uncaught exception:', (err && err.stack) || err);
+    process.exit(1); // exit so the platform (Render/systemd) restarts us cleanly
+});
+
 // Start Application Server
 const PORT = process.env.PORT || 4000;
 app.listen(PORT, async () => {
@@ -744,5 +778,6 @@ app.listen(PORT, async () => {
     await ensureRemindersTable();
     await ensurePushSubscriptionsTable();
     await ensurePaymentHistoryFileColumns();
+    await ensureTaskCompletedAtColumn();
     require('./scheduler'); // Start the cron scheduler
 });

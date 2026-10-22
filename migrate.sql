@@ -31,3 +31,10 @@ ALTER TABLE payment_history ADD COLUMN doc_type VARCHAR(50) DEFAULT NULL;
 
 -- daily_tasks: change due_date from DATE to DATETIME so time is preserved
 ALTER TABLE daily_tasks MODIFY COLUMN due_date DATETIME NOT NULL;
+
+-- Monthly completed counter (dashboard card resets on the 1st of each month)
+ALTER TABLE daily_tasks ADD COLUMN completed_at TIMESTAMP NULL DEFAULT NULL;
+
+-- One-time backfill: stamp already-completed tasks so the count keeps showing
+-- until the next 1st-of-month, then resets naturally (safe to re-run: only touches NULLs)
+UPDATE daily_tasks SET completed_at = NOW() WHERE status = 'completed' AND completed_at IS NULL;

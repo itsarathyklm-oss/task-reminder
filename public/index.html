@@ -133,6 +133,11 @@
                         <option value="contract">Contract</option>
                     </select>
                 </div>
+                <div>
+                    <label class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Document File (optional)</label>
+                    <input type="file" id="editSubFile" class="w-full text-xs text-slate-500 mt-1 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-bold file:bg-orange-50 file:text-orange-600 hover:file:bg-orange-100">
+                    <p id="editSubCurrentFile" class="text-[10px] text-slate-400 mt-1 hidden"></p>
+                </div>
                 <p id="editSubError" class="text-xs text-red-500 hidden"></p>
                 <div class="flex gap-2 pt-2">
                     <button type="button" onclick="closeEditSubscriptionModal()" class="flex-1 bg-slate-100 text-slate-600 px-4 py-2.5 rounded-xl text-xs font-semibold hover:bg-slate-200">Cancel</button>
@@ -442,6 +447,7 @@
                                 <span id="reminderCount" class="text-[10px] font-bold text-orange-500 bg-orange-50 px-2 py-0.5 rounded-md">0 reminders</span>
                             </div>
                             <div id="remindersFullList" class="divide-y divide-slate-50 max-h-[600px] overflow-y-auto p-3 space-y-2"></div>
+                            <div id="reminderPagination" class="flex items-center justify-between px-5 py-3 border-t border-slate-100"></div>
                         </div>
                     </div>
                 </div>
@@ -537,6 +543,11 @@
     <script>
         let currentCalDate = new Date();
         let selectedDateStr = new Date().toISOString().split('T')[0];
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return String(str).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+        }
 
         function toAMPM(time24) {
             if (!time24) return '';
@@ -689,7 +700,7 @@
                     const iconBg = isRenewal ? 'bg-orange-100 text-orange-600' : (item.completed ? 'bg-emerald-100 text-emerald-600' : 'bg-amber-100 text-amber-600');
                     const icon = isRenewal ? '\u26a1' : (item.completed ? '\u2713' : '\ud83d\udccc');
 
-                    return '<div class="flex items-start gap-3 ' + bgColor + ' border-l-[3px] rounded-lg p-3"><div class="w-8 h-8 rounded-full ' + iconBg + ' flex items-center justify-center text-xs shrink-0 mt-0.5">' + icon + '</div><div class="flex-1 min-w-0"><p class="text-xs font-bold text-slate-800">' + item.title + '</p><p class="text-xs font-semibold text-slate-600 mt-0.5">' + item.subtitle + '</p></div><span class="text-[10px] font-bold text-slate-400 shrink-0">' + toAMPM(item.time) + '</span></div>';
+                    return '<div class="flex items-start gap-3 ' + bgColor + ' border-l-[3px] rounded-lg p-3"><div class="w-8 h-8 rounded-full ' + iconBg + ' flex items-center justify-center text-xs shrink-0 mt-0.5">' + icon + '</div><div class="flex-1 min-w-0"><p class="text-xs font-bold text-slate-800">' + escapeHtml(item.title) + '</p><p class="text-xs font-semibold text-slate-600 mt-0.5">' + escapeHtml(item.subtitle) + '</p></div><span class="text-[10px] font-bold text-slate-400 shrink-0">' + toAMPM(item.time) + '</span></div>';
                 }).join('');
             }
 
@@ -701,7 +712,7 @@
                     remindersContainer.innerHTML = upcoming.map(function(item) {
                         const d = new Date(item.date + 'T00:00:00');
                         const dateStr = d.toLocaleDateString('en-US', { day: 'numeric', month: 'short', weekday: 'long' });
-                        return '<div class="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-50 transition-all cursor-pointer"><div class="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500 text-sm shrink-0">&#9993;</div><div class="flex-1 min-w-0"><p class="text-xs font-bold text-slate-800 truncate">' + item.title + '</p><p class="text-[10px] text-slate-400">' + dateStr + '</p></div></div>';
+                        return '<div class="flex items-center gap-3 p-2.5 rounded-xl hover:bg-slate-50 transition-all cursor-pointer"><div class="w-9 h-9 rounded-xl bg-blue-50 flex items-center justify-center text-blue-500 text-sm shrink-0">&#9993;</div><div class="flex-1 min-w-0"><p class="text-xs font-bold text-slate-800 truncate">' + escapeHtml(item.title) + '</p><p class="text-[10px] text-slate-400">' + dateStr + '</p></div></div>';
                     }).join('');
                 }
             }
